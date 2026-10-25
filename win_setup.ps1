@@ -1,4 +1,4 @@
-# EqServers - Windows Server Hardware, Speedtest, iperf3 & License v2.5
+# EqServers - Windows Server Hardware, Speedtest, iperf3 & License v2.6
 $ErrorActionPreference = "SilentlyContinue"
 
 $sys = Get-CimInstance Win32_ComputerSystem
@@ -26,7 +26,7 @@ foreach ($l in $lic) {
 if ($os.Caption -like "*Evaluation*") { $licChannel = "Evaluation Edition" }
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.5" -ForegroundColor Cyan
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.6" -ForegroundColor Cyan
 Write-Host " Vendor : $($sys.Manufacturer)"
 Write-Host " Model  : $($sys.Model) (S/N: $($bios.SerialNumber))"
 Write-Host " OS     : $($os.Caption) | Build: $($os.BuildNumber) | Uptime: $($uptime.Days)d $($uptime.Hours)h"
@@ -87,8 +87,13 @@ if (-not (Test-Path $iperfPath)) {
     try {
         Invoke-WebRequest -Uri "https://iperf.fr/download/windows/iperf-3.13-win64.zip" -OutFile $iperfZip -UseBasicParsing
         Expand-Archive -Path $iperfZip -DestinationPath "$env:TEMP\iperf_extracted" -Force
+        
+        # Correctly find iperf3.exe inside any subfolder and move it to TEMP root
         $foundExe = Get-ChildItem -Path "$env:TEMP\iperf_extracted" -Recurse -Filter "iperf3.exe" | Select-Object -First 1
-        if ($foundExe) { Move-Item $foundExe.FullName $iperfPath -Force }
+        if ($foundExe) {
+            Move-Item $foundExe.FullName $iperfPath -Force
+        }
+        
         Remove-Item $iperfZip -Force
         Remove-Item "$env:TEMP\iperf_extracted" -Recurse -Force
     } catch {}
