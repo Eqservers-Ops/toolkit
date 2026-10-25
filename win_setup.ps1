@@ -96,7 +96,7 @@ if (-not (Test-Path $iperfPath)) {
 }
 if (Test-Path $iperfPath) {
     Write-Host "  Running iPerf3 throughput test (5 seconds)..." -ForegroundColor Cyan
-    $iperfRaw = & $iperfPath -c speedtest.ams1.nl.leaseweb.net -p 5201 -t 5 -R --json 2>&1
+    $iperfRaw = & $iperfPath -c speedtest.ams2.nl.leaseweb.net -p 5201 -t 5 -R --json 2>&1
     try {
         $iperfJson = $iperfRaw | ConvertFrom-Json
         if ($iperfJson.end) {
