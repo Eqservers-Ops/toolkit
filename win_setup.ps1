@@ -1,4 +1,4 @@
-# EqServers - Windows Server Hardware Audit & Post-Setup v2.1
+# EqServers - Windows Server Hardware Audit & Speedtest v2.2
 $ErrorActionPreference = "SilentlyContinue"
 
 $sys = Get-CimInstance Win32_ComputerSystem
@@ -7,7 +7,7 @@ $os = Get-CimInstance Win32_OperatingSystem
 $uptime = (Get-Date) - $os.LastBootUpTime
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SETUP REPORT v2.1" -ForegroundColor Cyan
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.2" -ForegroundColor Cyan
 Write-Host " Vendor : $($sys.Manufacturer)"
 Write-Host " Model  : $($sys.Model) (S/N: $($bios.SerialNumber))"
 Write-Host " OS     : $($os.Caption) | Build: $($os.BuildNumber) | Uptime: $($uptime.Days)d $($uptime.Hours)h"
@@ -36,7 +36,45 @@ Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -or $_.PhysicalMediaType -ne 
     Write-Host ("  - {0,-18} | Status: {1,-12} | Speed: {2,-10} | MAC: {3} | IP: {4}" -f $iface.Name, $iface.Status, $iface.LinkSpeed, $iface.MacAddress, $ip)
 }
 
-Write-Host "`n[3] STORAGE CONTROLLERS & PHYSICAL DISK HEALTH:" -ForegroundColor Yellow
+Write-Host "`n[3] INTERNET BANDWIDTH SPEEDTEST (Ookla Speedtest CLI):" -ForegroundColor Yellow
+$stPath = "$env:TEMP\speedtest.exe"
+if (-not (Test-Path $stPath)) {
+    Write-Host "  [INFO] Downloading official Ookla Speedtest CLI utility..." -ForegroundColor DarkGray
+    $zipPath = "$env:TEMP\speedtest.zip"
+    try {
+        Invoke-WebRequest -Uri "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip" -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\speedtest_extracted" -Force
+        Move-Item "$env:TEMP\speedtest_extracted\speedtest.exe" $stPath -Force
+        Remove-Item $zipPath -Force
+        Remove-Item "$env:TEMP\speedtest_extracted" -Recurse -Force
+    } catch {
+        Write-Host "  [WARN] Could not download speedtest binary automatically." -ForegroundColor Red
+    }
+}
+
+if (Test-Path $stPath) {
+    Write-Host "  Running Ookla Speedtest against nearest server (please wait ~10 seconds)..." -ForegroundColor Cyan
+    $stOutput = & $stPath --accept-license --accept-gdpr --format=json | ConvertFrom-Json
+    if ($stOutput -and $stOutput.download) {
+        $dlMbps = [math]::Round($stOutput.download.bandwidth * 8 / 1000000, 2)
+        $ulMbps = [math]::Round($stOutput.upload.bandwidth * 8 / 1000000, 2)
+        $ping = [math]::Round($stOutput.ping.latency, 1)
+        $isp = $stOutput.client.isp
+        $serverName = $stOutput.server.name
+        $serverLoc = $stOutput.server.location
+        Write-Host ("  - Download Speed : {0} Mbps" -f $dlMbps) -ForegroundColor Green
+        Write-Host ("  - Upload Speed   : {0} Mbps" -f $ulMbps) -ForegroundColor Green
+        Write-Host ("  - Ping / Latency : {0} ms" -f $ping)
+        Write-Host ("  - Test Server    : {0} ({1})" -f $serverName, $serverLoc)
+        Write-Host ("  - ISP / Provider : {0}" -f $isp)
+    } else {
+        Write-Host "  [WARN] Speedtest executed but returned unexpected data format." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  [SKIP] Speedtest tool unavailable." -ForegroundColor Yellow
+}
+
+Write-Host "`n[4] STORAGE CONTROLLERS & PHYSICAL DISK HEALTH:" -ForegroundColor Yellow
 Write-Host ">>> Storage / RAID Controllers:"
 Get-CimInstance Win32_SCSIController | ForEach-Object {
     Write-Host "  - $($_.Name) (Status: $($_.Status))"
@@ -59,7 +97,7 @@ Get-PhysicalDisk | Sort-Object DeviceId | ForEach-Object {
     }
 }
 
-Write-Host "`n[4] WINDOWS SYSTEM EVENT LOG: DISK I/O & HARDWARE (WHEA) ERRORS (Last 7 Days):" -ForegroundColor Yellow
+Write-Host "`n[5] WINDOWS SYSTEM EVENT LOG: DISK I/O & HARDWARE (WHEA) ERRORS (Last 7 Days):" -ForegroundColor Yellow
 $startTime = (Get-Date).AddDays(-7)
 $hwEvents = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-WHEA-Logger','disk','ntfs','storachi','MegaSAS','HpSAMD'; Level=1,2,3; StartTime=$startTime} -MaxEvents 10
 if ($hwEvents) {
@@ -72,7 +110,7 @@ if ($hwEvents) {
     Write-Host "  [OK] Zero WHEA Hardware/RAM errors or Disk Bad Block/I/O errors in the last 7 days." -ForegroundColor Green
 }
 
-Write-Host "`n[5] RDP CONFIGURATION & HOTFIX VERIFICATION:" -ForegroundColor Yellow
+Write-Host "`n[6] RDP CONFIGURATION & HOTFIX VERIFICATION:" -ForegroundColor Yellow
 $hotfixId = "KB5129237"
 $kb = Get-HotFix -Id $hotfixId
 $lastKb = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
@@ -82,7 +120,6 @@ if ($kb) {
     Write-Host "  [INFO] Specific hotfix $hotfixId not listed. Latest installed update: $($lastKb.HotFixID) ($($lastKb.InstalledOn))"
 }
 
-# Verify RDP is enabled and firewall open
 Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
 Write-Host "  [OK] Remote Desktop (RDP) service & Windows Firewall rules verified active." -ForegroundColor Green
