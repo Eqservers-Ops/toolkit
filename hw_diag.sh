@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# EqServers - Universal Bare-Metal Hardware Audit v2.0 (HP / Dell / Supermicro / Huawei)
+# EqServers - Universal Bare-Metal Hardware Audit v2.1 (HP / Dell / Supermicro / Huawei)
 
-# Auto-install lightweight missing diag tools silently if running on live OS
 for pkg_cmd in "ipmitool:ipmitool" "ethtool:ethtool" "lspci:pciutils" "smartctl:smartmontools"; do
     bin="${pkg_cmd%%:*}"
     pkg="${pkg_cmd##*:}"
@@ -17,7 +16,7 @@ MODEL=$(dmidecode -s system-product-name 2>/dev/null | head -n 1 | xargs)
 SERIAL=$(dmidecode -s system-serial-number 2>/dev/null | head -n 1 | xargs)
 
 echo "================================================================="
-echo " EQSERVERS HARDWARE DIAGNOSTIC REPORT v2.0"
+echo " EQSERVERS HARDWARE DIAGNOSTIC REPORT v2.1"
 echo " Vendor : $VENDOR"
 echo " Model  : $MODEL (S/N: $SERIAL)"
 echo " Host   : $(hostname) | Date: $(date -u '+%Y-%m-%d %H:%M UTC')"
@@ -58,7 +57,7 @@ done
 
 echo -e "\n[3] RAID CONTROLLER & ARRAY STATUS:"
 echo ">>> PCIe Storage / RAID Controllers Detected (lspci):"
-lspci 2>/dev/null | grep -iE "RAID|SCSI|SAS|SATA|Non-Volatile|Hewlett-Packard Company Smart Array|MegaRAID" | sed 's/^/  /'
+lspci 2>/dev/null | grep -iE "RAID|SCSI|SAS|SATA|Non-Volatile|Smart Array|MegaRAID" | sed 's/^/  /'
 
 if command -v ssacli &>/dev/null && lspci 2>/dev/null | grep -qi "Smart Array"; then
     echo ">>> HP Smart Array Status (ssacli):"
@@ -80,16 +79,14 @@ if grep -q "md" /proc/mdstat 2>/dev/null; then
     cat /proc/mdstat
 fi
 
-echo -e "\n[4] DISK SMART HEALTH (Reallocated, Pending, Uncorrectable, UDMA CRC, Wear):"
-SMART_GREP="Device Model|Model Number|Product:|Serial Number|test result|SMART Health Status|Reallocated_Sector|Current_Pending_Sector|Offline_Uncorrectable|UDMA_CRC_Error|Reported_Uncorrect|Media_Wearout|Percentage Used|Media and Data Integrity|Power_On_Hours|Grown_Defect|Elements in grown defect|Non-medium error"
+echo -e "\n[4] DISK SMART HEALTH (Reallocated, Pending, Uncorrectable, UDMA CRC, SSD Wear):"
+SMART_GREP="Device Model|Model Number|Product:|Serial Number|test result|SMART Health Status|Reallocated_Sector|Current_Pending_Sector|Offline_Uncorrectable|UDMA_CRC_Error|Reported_Uncorrect|Command_Timeout|Wear_Leveling_Count|Used_Rsvd_Blk|Runtime_Bad_Block|Media_Wearout|Percentage Used|Media and Data Integrity|Power_On_Hours|Grown_Defect|Elements in grown defect|Non-medium error"
 
-# 1. Direct block devices (skip virtual RAID logical volumes if underlying drives are scanned below)
 for disk in $(lsblk -dn -o NAME | grep -E '^sd|^nvme'); do
     echo "--- Block Device: /dev/$disk ($(lsblk -dn -o SIZE /dev/$disk)) ---"
     smartctl -i -H -A /dev/$disk | grep -E "$SMART_GREP"
 done
 
-# 2. Hidden drives behind MegaRAID / Dell PERC / Huawei / Supermicro LSI
 MEGARAID_DEVS=$(smartctl --scan | grep "megaraid" | awk '{print $1, $2, $3}')
 if [ -n "$MEGARAID_DEVS" ]; then
     echo ">>> Physical Disks Behind Hardware MegaRAID / PERC Controller:"
@@ -99,7 +96,6 @@ if [ -n "$MEGARAID_DEVS" ]; then
     done <<< "$MEGARAID_DEVS"
 fi
 
-# 3. Hidden drives behind HP Smart Array (cciss) - only runs if Smart Array PCIe card is present
 if lspci 2>/dev/null | grep -qi "Smart Array" && [ -b /dev/sda ]; then
     echo ">>> Physical Disks Behind HP Smart Array Controller:"
     for i in {0..15}; do
@@ -111,23 +107,31 @@ if lspci 2>/dev/null | grep -qi "Smart Array" && [ -b /dev/sda ]; then
     done
 fi
 
-echo -e "\n[5] UMC / ECC MEMORY, CPU MCE & DISK I/O KERNEL ERRORS:"
-# Check EDAC memory controller counters
+echo -e "\n[5] MEMORY (ECC/UMC/MCE) & DISK (UNC/ICRC/IO) KERNEL ERRORS:"
 if ls /sys/devices/system/edac/mc/mc*/ce_count &>/dev/null; then
     CE=$(cat /sys/devices/system/edac/mc/mc*/ce_count 2>/dev/null | awk '{s+=$1} END {print s}')
     UE=$(cat /sys/devices/system/edac/mc/mc*/ue_count 2>/dev/null | awk '{s+=$1} END {print s}')
     echo "  - EDAC RAM Error Counters : Correctable (CE) = ${CE:-0} | Uncorrectable (UE/UMC) = ${UE:-0}"
+    # If any DIMM channel has errors > 0, print the exact DIMM label
+    for ch in /sys/devices/system/edac/mc/mc*/csrow*/ch*_ce_count; do
+        [ -f "$ch" ] || continue
+        CNT=$(cat "$ch" 2>/dev/null)
+        if [ "${CNT:-0}" -gt 0 ]; then
+            LBL=$(cat "${ch%_ce_count}_dimm_label" 2>/dev/null)
+            echo "    [!] RAM Errors on Channel ($LBL): $CNT correctable errors"
+        fi
+    done
 else
     echo "  - EDAC RAM Error Counters : Not exposed by kernel/BIOS"
 fi
 
-# Scan kernel ring buffer (dmesg) for UMC, MCE, ECC, I/O, and RAID errors
-DMESG_ERRS=$(dmesg -T 2>/dev/null | grep -iE "UMC|Uncorrected|Hardware Error|MCE|EDAC|I/O error|medium error|blk_update_request|resetting link|SMART" | tail -n 15)
+# Filter dmesg for real RAM (UMC/ECC/MCE) and Disk (UNC/ICRC/I/O) errors, excluding normal EDAC driver boot lines
+DMESG_ERRS=$(dmesg -T 2>/dev/null | grep -iE "UMC|Uncorrected|Hardware Error|mce:|EDAC.*(CE|UE|error)|I/O error|medium error|blk_update_request|critical medium|error: \{.*(UNC|ICRC|ABRT)|resetting link" | grep -vE "EDAC MC: Ver|Giving out device" | tail -n 15)
 if [ -n "$DMESG_ERRS" ]; then
-    echo "  [WARN] Recent Hardware/Disk Errors Found in dmesg:"
+    echo "  [WARN] Hardware / Memory / Disk Errors Found in dmesg:"
     echo "$DMESG_ERRS" | sed 's/^/    /'
 else
-    echo "  [OK] Zero UMC, ECC, MCE, or Disk I/O errors detected in dmesg."
+    echo "  [OK] Zero Memory (ECC/UMC/MCE) or Disk (UNC/ICRC/I/O) errors in dmesg."
 fi
 
 echo -e "\n[6] IPMI / iDRAC / iLO / iBMC SENSORS & SEL LOGS:"
