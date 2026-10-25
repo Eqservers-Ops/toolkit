@@ -1,4 +1,4 @@
-# EqServers - Windows Server Hardware, Speedtest, iperf3 & License v2.4
+# EqServers - Windows Server Hardware, Speedtest, iperf3 & License v2.5
 $ErrorActionPreference = "SilentlyContinue"
 
 $sys = Get-CimInstance Win32_ComputerSystem
@@ -6,7 +6,6 @@ $bios = Get-CimInstance Win32_BIOS
 $os = Get-CimInstance Win32_OperatingSystem
 $uptime = (Get-Date) - $os.LastBootUpTime
 
-# Check Windows License Activation Status
 $lic = Get-CimInstance Win32_SoftwareLicensingProduct -Filter "ApplicationID = '55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey is not NULL"
 $licStatus = "Unknown / Not Activated"
 $licChannel = "Unknown"
@@ -24,12 +23,10 @@ foreach ($l in $lic) {
         $licStatus = "Unlicensed / Evaluation Grace Period"
     }
 }
-if ($os.Caption -like "*Evaluation*") {
-    $licChannel = "Evaluation Edition"
-}
+if ($os.Caption -like "*Evaluation*") { $licChannel = "Evaluation Edition" }
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.4" -ForegroundColor Cyan
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.5" -ForegroundColor Cyan
 Write-Host " Vendor : $($sys.Manufacturer)"
 Write-Host " Model  : $($sys.Model) (S/N: $($bios.SerialNumber))"
 Write-Host " OS     : $($os.Caption) | Build: $($os.BuildNumber) | Uptime: $($uptime.Days)d $($uptime.Hours)h"
@@ -45,11 +42,6 @@ foreach ($p in $procs) {
 $totalRam = [math]::Round($sys.TotalPhysicalMemory / 1GB, 2)
 $freeRam = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
 Write-Host "  Memory: Total = $totalRam GB | Free = $freeRam GB"
-Write-Host "  Populated RAM DIMM Slots:"
-Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
-    $sz = [math]::Round($_.Capacity / 1GB, 0)
-    Write-Host ("    - Slot: {0,-14} | Size: {1,-5} GB | Speed: {2} MHz | Part: {3}" -f $_.DeviceLocator, $sz, $_.Speed, $_.PartNumber.Trim())
-}
 
 Write-Host "`n[2] NETWORK INTERFACES & PORT SPEED CHECK:" -ForegroundColor Yellow
 Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -or $_.PhysicalMediaType -ne 'Unspecified' } | ForEach-Object {
