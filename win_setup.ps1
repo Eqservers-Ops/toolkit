@@ -82,52 +82,34 @@ if (Test-Path $stPath) {
 }
 
 Write-Host "`n[3.5] IPERF3 RAW THROUGHPUT TEST (vs Leaseweb Amsterdam):" -ForegroundColor Yellow
-$iperfDir = "$env:TEMP\iperf3"
-$iperfPath = Join-Path $iperfDir "iperf3.exe"
-
+$iperfPath = "$env:TEMP\iperf3.exe"
 if (-not (Test-Path $iperfPath)) {
-    $iperfZip = Join-Path $env:TEMP "iperf3-win64.zip"
-    $iperfExtract = Join-Path $env:TEMP "iperf3-extract"
-    $iperfUrl = "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip"
-
     try {
-        Invoke-WebRequest -Uri $iperfUrl -OutFile $iperfZip -UseBasicParsing
-        Expand-Archive -Path $iperfZip -DestinationPath $iperfExtract -Force
-        $iperfExe = Get-ChildItem -Path $iperfExtract -Filter "iperf3.exe" -Recurse | Select-Object -First 1
-        if ($iperfExe) {
-            New-Item -ItemType Directory -Path $iperfDir -Force | Out-Null
-            Copy-Item $iperfExe.FullName $iperfPath -Force
-            Get-ChildItem $iperfExe.DirectoryName -File | Where-Object { $_.Name -ne "iperf3.exe" } | Copy-Item -Destination $iperfDir -Force
-        } else {
-            Write-Host "  [WARN] Downloaded archive did not contain iperf3.exe." -ForegroundColor Yellow
-        }
+        Invoke-WebRequest -Uri "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip" -OutFile "$env:TEMP\iperf3.zip" -UseBasicParsing
+        Expand-Archive -Path "$env:TEMP\iperf3.zip" -DestinationPath "$env:TEMP\iperf3_extract" -Force
+        $iperfExe = Get-ChildItem "$env:TEMP\iperf3_extract" -Filter "iperf3.exe" -Recurse | Select-Object -First 1
+        if ($iperfExe) { Copy-Item $iperfExe.FullName $iperfPath -Force }
+        Remove-Item "$env:TEMP\iperf3.zip","$env:TEMP\iperf3_extract" -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
-        Write-Host "  [WARN] Could not download/extract iperf3: $($_.Exception.Message)" -ForegroundColor Yellow
-    } finally {
-        Remove-Item $iperfZip, $iperfExtract -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "  [WARN] iPerf3 download failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
-
 if (Test-Path $iperfPath) {
-    Write-Host "  Running iperf3 throughput test (5 seconds)..." -ForegroundColor Cyan
+    Write-Host "  Running iPerf3 throughput test (5 seconds)..." -ForegroundColor Cyan
     $iperfRaw = & $iperfPath -c speedtest.ams1.nl.leaseweb.net -p 5201 -t 5 -R --json 2>&1
-    if ($LASTEXITCODE -eq 0 -and $iperfRaw) {
-        try {
-            $iperfJson = $iperfRaw | ConvertFrom-Json
-            if ($iperfJson.end) {
-                $iperfMbps = [math]::Round($iperfJson.end.sum_received.bits_per_second / 1000000, 2)
-                Write-Host ("  - iperf3 Download (vs Leaseweb AMS) : {0} Mbps" -f $iperfMbps) -ForegroundColor Green
-            } else {
-                Write-Host "  [WARN] iperf3 returned no throughput result." -ForegroundColor Yellow
-            }
-        } catch {
-            Write-Host "  [WARN] iperf3 returned invalid JSON or could not connect." -ForegroundColor Yellow
+    try {
+        $iperfJson = $iperfRaw | ConvertFrom-Json
+        if ($iperfJson.end) {
+            $iperfMbps = [math]::Round($iperfJson.end.sum_received.bits_per_second / 1000000, 2)
+            Write-Host ("  - iPerf3 Download (Leaseweb AMS): {0} Mbps" -f $iperfMbps) -ForegroundColor Green
+        } else {
+            Write-Host "  [WARN] iPerf3 test could not complete." -ForegroundColor Yellow
         }
-    } else {
-        Write-Host "  [WARN] iperf3 test failed (exit code $LASTEXITCODE)." -ForegroundColor Yellow
+    } catch {
+        Write-Host "  [WARN] iPerf3 output could not be read." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  [SKIP] iperf3 binary unavailable." -ForegroundColor Yellow
+    Write-Host "  [SKIP] iPerf3 binary unavailable." -ForegroundColor Yellow
 }
 
 Write-Host "`n[4] STORAGE CONTROLLERS & PHYSICAL DISK HEALTH:" -ForegroundColor Yellow
