@@ -1,4 +1,4 @@
-# EqServers - Windows Server Hardware Audit & Speedtest v2.2
+# EqServers - Windows Server Hardware, Speedtest, iperf3 & License v2.4
 $ErrorActionPreference = "SilentlyContinue"
 
 $sys = Get-CimInstance Win32_ComputerSystem
@@ -6,11 +6,34 @@ $bios = Get-CimInstance Win32_BIOS
 $os = Get-CimInstance Win32_OperatingSystem
 $uptime = (Get-Date) - $os.LastBootUpTime
 
+# Check Windows License Activation Status
+$lic = Get-CimInstance Win32_SoftwareLicensingProduct -Filter "ApplicationID = '55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey is not NULL"
+$licStatus = "Unknown / Not Activated"
+$licChannel = "Unknown"
+foreach ($l in $lic) {
+    if ($l.LicenseStatus -eq 1) {
+        $licStatus = "Licensed (Activated)"
+        switch ($l.Description) {
+            { $_ -like "*RETAIL*" } { $licChannel = "Retail" }
+            { $_ -like "*VOLUME*" -or $_ -like "*KMS*" -or $_ -like "*MAK*" } { $licChannel = "Volume / KMS" }
+            { $_ -like "*OEM*" } { $licChannel = "OEM" }
+            default { $licChannel = "Standard / Other" }
+        }
+        break
+    } elseif ($l.LicenseStatus -eq 0) {
+        $licStatus = "Unlicensed / Evaluation Grace Period"
+    }
+}
+if ($os.Caption -like "*Evaluation*") {
+    $licChannel = "Evaluation Edition"
+}
+
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.2" -ForegroundColor Cyan
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.4" -ForegroundColor Cyan
 Write-Host " Vendor : $($sys.Manufacturer)"
 Write-Host " Model  : $($sys.Model) (S/N: $($bios.SerialNumber))"
 Write-Host " OS     : $($os.Caption) | Build: $($os.BuildNumber) | Uptime: $($uptime.Days)d $($uptime.Hours)h"
+Write-Host " License: $licStatus ($licChannel)" -ForegroundColor $(if($licStatus -like "*Licensed*"){"Green"}else{"Yellow"})
 Write-Host " Host   : $env:COMPUTERNAME | Date: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')) UTC"
 Write-Host "=================================================================" -ForegroundColor Cyan
 
@@ -39,7 +62,6 @@ Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -or $_.PhysicalMediaType -ne 
 Write-Host "`n[3] INTERNET BANDWIDTH SPEEDTEST (Ookla Speedtest CLI):" -ForegroundColor Yellow
 $stPath = "$env:TEMP\speedtest.exe"
 if (-not (Test-Path $stPath)) {
-    Write-Host "  [INFO] Downloading official Ookla Speedtest CLI utility..." -ForegroundColor DarkGray
     $zipPath = "$env:TEMP\speedtest.zip"
     try {
         Invoke-WebRequest -Uri "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip" -OutFile $zipPath -UseBasicParsing
@@ -47,31 +69,53 @@ if (-not (Test-Path $stPath)) {
         Move-Item "$env:TEMP\speedtest_extracted\speedtest.exe" $stPath -Force
         Remove-Item $zipPath -Force
         Remove-Item "$env:TEMP\speedtest_extracted" -Recurse -Force
-    } catch {
-        Write-Host "  [WARN] Could not download speedtest binary automatically." -ForegroundColor Red
-    }
+    } catch {}
 }
 
 if (Test-Path $stPath) {
-    Write-Host "  Running Ookla Speedtest against nearest server (please wait ~10 seconds)..." -ForegroundColor Cyan
+    Write-Host "  Running Ookla Speedtest against nearest server..." -ForegroundColor Cyan
     $stOutput = & $stPath --accept-license --accept-gdpr --format=json | ConvertFrom-Json
     if ($stOutput -and $stOutput.download) {
         $dlMbps = [math]::Round($stOutput.download.bandwidth * 8 / 1000000, 2)
         $ulMbps = [math]::Round($stOutput.upload.bandwidth * 8 / 1000000, 2)
         $ping = [math]::Round($stOutput.ping.latency, 1)
-        $isp = $stOutput.client.isp
-        $serverName = $stOutput.server.name
-        $serverLoc = $stOutput.server.location
         Write-Host ("  - Download Speed : {0} Mbps" -f $dlMbps) -ForegroundColor Green
         Write-Host ("  - Upload Speed   : {0} Mbps" -f $ulMbps) -ForegroundColor Green
         Write-Host ("  - Ping / Latency : {0} ms" -f $ping)
-        Write-Host ("  - Test Server    : {0} ({1})" -f $serverName, $serverLoc)
-        Write-Host ("  - ISP / Provider : {0}" -f $isp)
-    } else {
-        Write-Host "  [WARN] Speedtest executed but returned unexpected data format." -ForegroundColor Yellow
+        Write-Host ("  - Test Server    : {0} ({1})" -f $stOutput.server.name, $stOutput.server.location)
     }
 } else {
     Write-Host "  [SKIP] Speedtest tool unavailable." -ForegroundColor Yellow
+}
+
+Write-Host "`n[3.5] IPERF3 RAW THROUGHPUT TEST (vs Leaseweb Amsterdam):" -ForegroundColor Yellow
+$iperfPath = "$env:TEMP\iperf3.exe"
+if (-not (Test-Path $iperfPath)) {
+    $iperfZip = "$env:TEMP\iperf3.zip"
+    try {
+        Invoke-WebRequest -Uri "https://iperf.fr/download/windows/iperf-3.13-win64.zip" -OutFile $iperfZip -UseBasicParsing
+        Expand-Archive -Path $iperfZip -DestinationPath "$env:TEMP\iperf_extracted" -Force
+        $foundExe = Get-ChildItem -Path "$env:TEMP\iperf_extracted" -Recurse -Filter "iperf3.exe" | Select-Object -First 1
+        if ($foundExe) { Move-Item $foundExe.FullName $iperfPath -Force }
+        Remove-Item $iperfZip -Force
+        Remove-Item "$env:TEMP\iperf_extracted" -Recurse -Force
+    } catch {}
+}
+
+if (Test-Path $iperfPath) {
+    Write-Host "  Running iperf3 throughput test (5 seconds)..." -ForegroundColor Cyan
+    $iperfRaw = & $iperfPath -c speedtest.ams1.nl.leaseweb.net -p 5201 -t 5 -R --json
+    if ($iperfRaw) {
+        $iperfJson = $iperfRaw | ConvertFrom-Json
+        if ($iperfJson -and $iperfJson.end) {
+            $iperfMbps = [math]::Round($iperfJson.end.sum_received.bits_per_second / 1000000, 2)
+            Write-Host ("  - iperf3 Download (vs Leaseweb AMS) : {0} Mbps" -f $iperfMbps) -ForegroundColor Green
+        } else {
+            Write-Host "  [WARN] iperf3 test could not complete." -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "  [SKIP] iperf3 binary unavailable." -ForegroundColor Yellow
 }
 
 Write-Host "`n[4] STORAGE CONTROLLERS & PHYSICAL DISK HEALTH:" -ForegroundColor Yellow
