@@ -1,0 +1,5 @@
+lsw_state.json
+*.xlsx
+*.ovpn
+*.log
+.DS_Store
