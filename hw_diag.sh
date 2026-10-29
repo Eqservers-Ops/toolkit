@@ -147,34 +147,27 @@ if command -v ipmitool &>/dev/null; then
     echo ">>> Thermal & Power Status:"
     ipmitool sdr type Temperature 2>/dev/null | grep -vE "Disabled|ns" | sed 's/^/  /'
     ipmitool sdr type "Power Supply" 2>/dev/null | grep -v "ns" | sed 's/^/  /'
-    echo ">>> CMOS / System Battery & RTC Status:
-  # 1. Check Linux RTC & Kernel dmesg for CMOS/RTC power loss
-  if dmesg 2>/dev/null | grep -qiE "rtc.*(invalid|fail|error|lost power)|cmos.*(error|fail|bad|checksum)"; then
-    echo "  [WARN] Kernel dmesg reports RTC/CMOS error:"
-    dmesg 2>/dev/null | grep -iE "rtc.*(invalid|fail|error|lost power)|cmos.*(error|fail|bad|checksum)" | tail -n 3 | sed "s/^/    /"
+  echo ">>> CMOS / System Battery & RTC Status:"
+  if dmesg 2>/dev/null | grep -qiE "rtc.*invalid|rtc.*fail|cmos.*error|cmos.*bad"; then
+    echo "  [WARN] Kernel dmesg reports RTC/CMOS error!"
   else
     RTC_TIME=$(cat /sys/class/rtc/rtc0/date /sys/class/rtc/rtc0/time 2>/dev/null | tr "\n" " ")
     echo "  [OK] Linux Hardware RTC Clock valid (${RTC_TIME:-Active})"
   fi
-  # 2. Check IPMI Battery Sensors (Dell CMOS Battery / HP Battery / Supermicro VBAT)
   if command -v ipmitool &>/dev/null; then
-    BATT_SDR=$(ipmitool sdr type "Battery" 2>/dev/null; ipmitool sdr 2>/dev/null | grep -iE "cmos|vbat|sys.*batt")
-    BATT_SDR=$(echo "$BATT_SDR" | sort -u | sed "/^$/d")
+    BATT_SDR=$(ipmitool sdr type Battery 2>/dev/null)
     if [ -n "$BATT_SDR" ]; then
       echo "$BATT_SDR" | sed "s/^/  /"
-    else
-      echo "  [INFO] No dedicated IPMI CMOS battery sensor exposed on this board."
     fi
-    # 3. Check entire IPMI SEL log history specifically for Battery/CMOS alerts
-    BATT_SEL=$(ipmitool sel elist 2>/dev/null | grep -iE "battery|cmos|vbat|rtc")
+    BATT_SEL=$(ipmitool sel elist 2>/dev/null | grep -iE "battery|cmos")
     if [ -n "$BATT_SEL" ]; then
-      echo "  [WARN] Historical IPMI SEL Battery/CMOS Events Found:"
+      echo "  [WARN] IPMI SEL Battery/CMOS Events Found:"
       echo "$BATT_SEL" | tail -n 5 | sed "s/^/    /"
     else
       echo "  [OK] Zero CMOS/Battery failure events in IPMI SEL history."
     fi
   fi
-echo ">>> Last 10 Hardware Event Logs (SEL):""
+    echo ">>> Last 10 Hardware Event Logs (SEL):"
     ipmitool sel elist 2>/dev/null | tail -n 10 | sed 's/^/  /'
 else
     echo "  ipmitool could not be installed or no BMC interface present."
