@@ -97,7 +97,7 @@ if (-not (Test-Path $iperfPath) -or -not (Test-Path $cygwinDll)) {
 }
 
 if (Test-Path $iperfPath) {
-    Write-Host "  Running iPerf3 throughput test (5 seconds)..." -ForegroundColor Cyan
+    Write-Host "  Running iPerf3 throughput tests (Download & Upload)..." -ForegroundColor Cyan
     $iperfMirrors = @(
         "speedtest.ams1.nl.leaseweb.net",
         "ams.speedtest.clouvider.net",
@@ -108,13 +108,21 @@ if (Test-Path $iperfPath) {
     )
     $iperfSuccess = $false
     foreach ($m in $iperfMirrors) {
-        $raw = & $iperfPath -c $m -p 5201 -P 4 -t 5 -R --connect-timeout 2000 --json 2>$null | Out-String
-        if ($raw) {
+        $rawDl = & $iperfPath -c $m -p 5201 -P 4 -t 4 -R --connect-timeout 2000 --json 2>$null | Out-String
+        if ($rawDl) {
             try {
-                $j = $raw | ConvertFrom-Json
-                $mbps = [math]::Round($j.end.sum_received.bits_per_second / 1e6, 2)
-                if ($mbps -gt 0) {
-                    Write-Host ("  - iPerf3 Download ({0}): {1} Mbps" -f $m, $mbps) -ForegroundColor Green
+                $jDl = $rawDl | ConvertFrom-Json
+                $dlMbps = [math]::Round($jDl.end.sum_received.bits_per_second / 1e6, 2)
+                if ($dlMbps -gt 0) {
+                    Write-Host ("  - iPerf3 Download ({0}): {1} Mbps" -f $m, $dlMbps) -ForegroundColor Green
+                    $rawUl = & $iperfPath -c $m -p 5201 -P 4 -t 4 --connect-timeout 2000 --json 2>$null | Out-String
+                    if ($rawUl) {
+                        $jUl = $rawUl | ConvertFrom-Json
+                        $ulMbps = [math]::Round($jUl.end.sum_sent.bits_per_second / 1e6, 2)
+                        if ($ulMbps -gt 0) {
+                            Write-Host ("  - iPerf3 Upload   ({0}): {1} Mbps" -f $m, $ulMbps) -ForegroundColor Green
+                        }
+                    }
                     $iperfSuccess = $true
                     break
                 }
