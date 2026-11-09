@@ -81,32 +81,48 @@ if (Test-Path $stPath) {
     Write-Host "  [SKIP] Speedtest tool unavailable." -ForegroundColor Yellow
 }
 
-Write-Host "`n[3.5] IPERF3 RAW THROUGHPUT TEST (vs Leaseweb Amsterdam):" -ForegroundColor Yellow
+Write-Host "`n[3.5] IPERF3 RAW THROUGHPUT TEST (Multi-Mirror Failover):" -ForegroundColor Yellow
 $iperfPath = "$env:TEMP\iperf3.exe"
-if (-not (Test-Path $iperfPath)) {
+$cygwinDll = "$env:TEMP\cygwin1.dll"
+
+if (-not (Test-Path $iperfPath) -or -not (Test-Path $cygwinDll)) {
     try {
         Invoke-WebRequest -Uri "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip" -OutFile "$env:TEMP\iperf3.zip" -UseBasicParsing
         Expand-Archive -Path "$env:TEMP\iperf3.zip" -DestinationPath "$env:TEMP\iperf3_extract" -Force
-        $iperfExe = Get-ChildItem "$env:TEMP\iperf3_extract" -Filter "iperf3.exe" -Recurse | Select-Object -First 1
-        if ($iperfExe) { Copy-Item $iperfExe.FullName $iperfPath -Force }
+        Get-ChildItem "$env:TEMP\iperf3_extract" -File -Recurse | Copy-Item -Destination $env:TEMP -Force
         Remove-Item "$env:TEMP\iperf3.zip","$env:TEMP\iperf3_extract" -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Host "  [WARN] iPerf3 download failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
+
 if (Test-Path $iperfPath) {
     Write-Host "  Running iPerf3 throughput test (5 seconds)..." -ForegroundColor Cyan
-    $iperfRaw = & $iperfPath -c speedtest.ams2.nl.leaseweb.net -p 5201 -t 5 -R --json 2>&1
-    try {
-        $iperfJson = $iperfRaw | ConvertFrom-Json
-        if ($iperfJson.end) {
-            $iperfMbps = [math]::Round($iperfJson.end.sum_received.bits_per_second / 1000000, 2)
-            Write-Host ("  - iPerf3 Download (Leaseweb AMS): {0} Mbps" -f $iperfMbps) -ForegroundColor Green
-        } else {
-            Write-Host "  [WARN] iPerf3 test could not complete." -ForegroundColor Yellow
+    $iperfMirrors = @(
+        "speedtest.ams1.nl.leaseweb.net",
+        "ams.speedtest.clouvider.net",
+        "nl.iperf.014.fr",
+        "speedtest.wtnet.de",
+        "fra.speedtest.clouvider.net",
+        "ping.online.net"
+    )
+    $iperfSuccess = $false
+    foreach ($m in $iperfMirrors) {
+        $raw = & $iperfPath -c $m -p 5201 -P 4 -t 5 -R --connect-timeout 2000 --json 2>$null | Out-String
+        if ($raw) {
+            try {
+                $j = $raw | ConvertFrom-Json
+                $mbps = [math]::Round($j.end.sum_received.bits_per_second / 1e6, 2)
+                if ($mbps -gt 0) {
+                    Write-Host ("  - iPerf3 Download ({0}): {1} Mbps" -f $m, $mbps) -ForegroundColor Green
+                    $iperfSuccess = $true
+                    break
+                }
+            } catch {}
         }
-    } catch {
-        Write-Host "  [WARN] iPerf3 output could not be read." -ForegroundColor Yellow
+    }
+    if (-not $iperfSuccess) {
+        Write-Host "  [WARN] All public iPerf3 mirrors were busy or unreachable." -ForegroundColor Yellow
     }
 } else {
     Write-Host "  [SKIP] iPerf3 binary unavailable." -ForegroundColor Yellow
