@@ -1,5 +1,5 @@
 # =====================================================================
-# EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.9 (Production)
+# EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v3.0 (Production)
 # Read-only hardware/OS audit + isolated Ookla & iPerf3 throughput tests
 # Compatible with Windows Server 2012 R2 (PS 4.0) through 2022 (PS 5.1)
 # Zero registry, firewall, or RDP modifications.
@@ -59,22 +59,11 @@ $os   = Get-CimInstance Win32_OperatingSystem
 $up   = (Get-Date) - $os.LastBootUpTime
 $utc  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
 
-$licText = "Unknown / Not Activated (Unknown)"
-try {
-    $lic = Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-98e3-d6ec3f16059f' AND PartialProductKey IS NOT NULL" | Select-Object -First 1
-    if ($lic) {
-        $statusMap = @{ 0 = "Unlicensed"; 1 = "Licensed"; 2 = "OOBGrace"; 3 = "OOTGrace"; 4 = "NonGenuineGrace"; 5 = "Notification"; 6 = "ExtendedGrace" }
-        $stStr = if ($statusMap.ContainsKey([int]$lic.LicenseStatus)) { $statusMap[[int]$lic.LicenseStatus] } else { "Code $($lic.LicenseStatus)" }
-        $licText = "$stStr ($($lic.Description))"
-    }
-} catch {}
-
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.9" -ForegroundColor Cyan
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v3.0" -ForegroundColor Cyan
 Write-Host " Vendor : $($cs.Manufacturer.Trim())"
 Write-Host " Model  : $($cs.Model.Trim()) (S/N: $($bios.SerialNumber.Trim()))"
 Write-Host " OS     : $($os.Caption.Trim()) | Build: $($os.BuildNumber) | Uptime: $($up.Days)d $($up.Hours)h"
-Write-Host " License: $licText"
 Write-Host " Host   : $env:COMPUTERNAME | Date: $utc"
 Write-Host "=================================================================" -ForegroundColor Cyan
 
@@ -336,5 +325,8 @@ if ($rdpSvc.Status -eq "Running" -and $rdpDeny -eq 0 -and $rdpFw) {
 } else {
     Write-Host "  [WARN] Check RDP status -> Service: $($rdpSvc.Status) | fDenyTSConnections: $rdpDeny | Active Firewall Rules: $($rdpFw.Count)" -ForegroundColor Yellow
 }
+
+# Clean up isolated temporary speedtest folders so zero footprint remains
+Remove-Item "C:\Windows\Temp\eq_speedtest", "C:\Windows\Temp\eq_iperf3" -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host "=================================================================" -ForegroundColor Cyan
