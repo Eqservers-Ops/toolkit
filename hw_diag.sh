@@ -99,7 +99,7 @@ PCI_STORAGE=""
 if command -v lspci &>/dev/null; then
     PCI_STORAGE=$(lspci 2>/dev/null | grep -iE "RAID|SCSI|SAS|SATA|Non-Volatile|Smart Array|MegaRAID")
     if [ -n "$PCI_STORAGE" ]; then
-        sed 's/^/  /' <<< "$PCI_STORAGE"
+        while IFS= read -r line; do printf '  %s\n' "$line"; done <<< "$PCI_STORAGE"
     else
         echo "  None detected."
     fi
@@ -194,7 +194,7 @@ DMESG_RAW=$(dmesg -T 2>/dev/null || dmesg 2>/dev/null)
 DMESG_ERRS=$(echo "$DMESG_RAW" | grep -iE "UMC|Uncorrected|Hardware Error|mce:|EDAC.*(CE|UE|error)|I/O error|medium error|blk_update_request|critical medium|error: \{.*(UNC|ICRC|ABRT)|resetting link" | grep -vE "EDAC MC: Ver|Giving out device" | tail -n 15)
 if [ -n "$DMESG_ERRS" ]; then
     echo "  [WARN] Hardware / Memory / Disk Errors Found in dmesg:"
-    sed 's/^/    /' <<< "$DMESG_ERRS"
+    while IFS= read -r line; do printf '    %s\n' "$line"; done <<< "$DMESG_ERRS"
 else
     echo "  [OK] Zero Memory (ECC/UMC/MCE) or Disk (UNC/ICRC/I/O) errors in dmesg."
 fi
@@ -222,7 +222,7 @@ if command -v ipmitool &>/dev/null; then
         BATT_SDR=$(ipmitool sdr type Battery 2>/dev/null)
         if [ -n "$BATT_SDR" ]; then
             echo ">>> Battery Sensors:"
-            sed 's/^/  /' <<< "$BATT_SDR"
+            while IFS= read -r line; do printf '  %s\n' "$line"; done <<< "$BATT_SDR"
         fi
         BATT_SEL=$(ipmitool sel elist 2>/dev/null | grep -iE "battery|cmos")
         if [ -n "$BATT_SEL" ]; then
