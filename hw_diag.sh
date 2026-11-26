@@ -72,7 +72,12 @@ else
 fi
 
 echo -e "\n[2] NETWORK INTERFACES & PORT SPEED CHECK:"
-for iface in $(ls /sys/class/net/ | grep -vE '^lo$|^docker|^veth|^br-|^virbr|^vnet|^tun|^tap'); do
+for path in /sys/class/net/*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    case "$iface" in
+        lo|docker*|veth*|br-*|virbr*|vnet*|tun*|tap*) continue ;;
+    esac
     STATE=$(cat /sys/class/net/"$iface"/operstate 2>/dev/null)
     MAC=$(cat /sys/class/net/"$iface"/address 2>/dev/null)
     IP=$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk '{print $4}' | paste -sd "," -)
@@ -94,7 +99,7 @@ PCI_STORAGE=""
 if command -v lspci &>/dev/null; then
     PCI_STORAGE=$(lspci 2>/dev/null | grep -iE "RAID|SCSI|SAS|SATA|Non-Volatile|Smart Array|MegaRAID")
     if [ -n "$PCI_STORAGE" ]; then
-        echo "$PCI_STORAGE" | sed 's/^/  /'
+        sed 's/^/  /' <<< "$PCI_STORAGE"
     else
         echo "  None detected."
     fi
@@ -107,19 +112,19 @@ if (command -v ssacli &>/dev/null || command -v hpssacli &>/dev/null) && echo "$
     HCLI=$(command -v ssacli || command -v hpssacli)
     RAID_CLI_FOUND=1
     echo ">>> HP Smart Array Status ($HCLI):"
-    $HCLI ctrl all show status 2>/dev/null
-    $HCLI ctrl all show config 2>/dev/null | grep -E "array|logicaldrive|physicaldrive"
+    "$HCLI" ctrl all show status 2>/dev/null
+    "$HCLI" ctrl all show config 2>/dev/null | grep -E "array|logicaldrive|physicaldrive"
 elif command -v storcli &>/dev/null || command -v storcli64 &>/dev/null || command -v perccli &>/dev/null; then
     CLI=$(command -v storcli || command -v storcli64 || command -v perccli)
     RAID_CLI_FOUND=1
     echo ">>> LSI / PERC Hardware RAID Status ($CLI):"
-    $CLI /c0 show 2>/dev/null | grep -E "Product Name|Status|BBU|CacheVault|Virtual Drives|Physical Drives" -A 15
+    "$CLI" /c0 show 2>/dev/null | grep -E "Product Name|Status|BBU|CacheVault|Virtual Drives|Physical Drives" -A 15
 elif command -v megacli &>/dev/null || command -v MegaCli64 &>/dev/null; then
     MCLI=$(command -v megacli || command -v MegaCli64)
     RAID_CLI_FOUND=1
     echo ">>> MegaCLI RAID Status:"
-    $MCLI -AdpAllInfo -aALL 2>/dev/null | grep -E "Product Name|Degraded|Failed Disks|Memory Size"
-    $MCLI -PDList -aALL 2>/dev/null | grep -E "Enclosure Device ID|Slot Number|Inquiry Data|Firmware state|Media Error Count|Predictive Failure Count"
+    "$MCLI" -AdpAllInfo -aALL 2>/dev/null | grep -E "Product Name|Degraded|Failed Disks|Memory Size"
+    "$MCLI" -PDList -aALL 2>/dev/null | grep -E "Enclosure Device ID|Slot Number|Inquiry Data|Firmware state|Media Error Count|Predictive Failure Count"
 elif command -v arcconf &>/dev/null; then
     RAID_CLI_FOUND=1
     echo ">>> Adaptec RAID Status (arcconf):"
@@ -141,7 +146,7 @@ SMART_GREP="Device Model|Model Number|Product:|Serial Number|test result|SMART H
 
 if command -v smartctl &>/dev/null; then
     for disk in $(lsblk -dn -o NAME 2>/dev/null | grep -E '^sd|^nvme'); do
-        echo "--- Block Device: /dev/$disk ($(lsblk -dn -o SIZE /dev/$disk 2>/dev/null)) ---"
+        echo "--- Block Device: /dev/$disk ($(lsblk -dn -o SIZE "/dev/$disk" 2>/dev/null)) ---"
         smartctl -i -H -A "/dev/$disk" 2>/dev/null | grep -E "$SMART_GREP"
     done
 
@@ -157,7 +162,7 @@ if command -v smartctl &>/dev/null; then
     if echo "$PCI_STORAGE" | grep -qi "Smart Array" && [ -b /dev/sda ]; then
         echo ">>> Physical Disks Behind HP Smart Array Controller:"
         for i in {0..15}; do
-            OUT=$(smartctl -i -H -A -d cciss,$i /dev/sda 2>/dev/null)
+            OUT=$(smartctl -i -H -A -d "cciss,$i" /dev/sda 2>/dev/null)
             if echo "$OUT" | grep -q -E "Device Model|Product:"; then
                 echo "--- HP Smart Array Bay cciss,$i ---"
                 echo "$OUT" | grep -E "$SMART_GREP"
@@ -189,7 +194,7 @@ DMESG_RAW=$(dmesg -T 2>/dev/null || dmesg 2>/dev/null)
 DMESG_ERRS=$(echo "$DMESG_RAW" | grep -iE "UMC|Uncorrected|Hardware Error|mce:|EDAC.*(CE|UE|error)|I/O error|medium error|blk_update_request|critical medium|error: \{.*(UNC|ICRC|ABRT)|resetting link" | grep -vE "EDAC MC: Ver|Giving out device" | tail -n 15)
 if [ -n "$DMESG_ERRS" ]; then
     echo "  [WARN] Hardware / Memory / Disk Errors Found in dmesg:"
-    echo "$DMESG_ERRS" | sed 's/^/    /'
+    sed 's/^/    /' <<< "$DMESG_ERRS"
 else
     echo "  [OK] Zero Memory (ECC/UMC/MCE) or Disk (UNC/ICRC/I/O) errors in dmesg."
 fi
@@ -217,7 +222,7 @@ if command -v ipmitool &>/dev/null; then
         BATT_SDR=$(ipmitool sdr type Battery 2>/dev/null)
         if [ -n "$BATT_SDR" ]; then
             echo ">>> Battery Sensors:"
-            echo "$BATT_SDR" | sed 's/^/  /'
+            sed 's/^/  /' <<< "$BATT_SDR"
         fi
         BATT_SEL=$(ipmitool sel elist 2>/dev/null | grep -iE "battery|cmos")
         if [ -n "$BATT_SEL" ]; then
