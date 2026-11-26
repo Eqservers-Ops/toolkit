@@ -18,8 +18,10 @@ if [ "$ALLOW_INSTALL" -eq 1 ]; then
         bin="${pkg_cmd%%:*}"
         pkg="${pkg_cmd##*:}"
         if ! command -v "$bin" &>/dev/null; then
-            if command -v apt-get &>/dev/null; then apt-get update -qq && apt-get install -y -qq "$pkg" &>/dev/null
-            elif command -v dnf &>/dev/null; then dnf install -y -q "$pkg" &>/dev/null
+            if command -v apt-get &>/dev/null; then
+                apt-get update -qq && apt-get install -y -qq "$pkg" &>/dev/null
+            elif command -v dnf &>/dev/null; then
+                dnf install -y -q "$pkg" &>/dev/null
             elif command -v yum &>/dev/null; then yum install -y -q "$pkg" &>/dev/null; fi
         fi
     done
@@ -27,13 +29,13 @@ fi
 
 # System & OS Metadata (DMI with sysfs read-only fallback)
 VENDOR=$(dmidecode -s system-manufacturer 2>/dev/null | head -n 1 | xargs)
-[ -z "$VENDOR" ] && [ -r /sys/class/dmi/id/sys_vendor ] && VENDOR=$(tr -d '\0' < /sys/class/dmi/id/sys_vendor | xargs)
+[ -z "$VENDOR" ] && [ -r /sys/class/dmi/id/sys_vendor ] && VENDOR=$(tr -d '\0' </sys/class/dmi/id/sys_vendor | xargs)
 
 MODEL=$(dmidecode -s system-product-name 2>/dev/null | head -n 1 | xargs)
-[ -z "$MODEL" ] && [ -r /sys/class/dmi/id/product_name ] && MODEL=$(tr -d '\0' < /sys/class/dmi/id/product_name | xargs)
+[ -z "$MODEL" ] && [ -r /sys/class/dmi/id/product_name ] && MODEL=$(tr -d '\0' </sys/class/dmi/id/product_name | xargs)
 
 SERIAL=$(dmidecode -s system-serial-number 2>/dev/null | head -n 1 | xargs)
-[ -z "$SERIAL" ] && [ -r /sys/class/dmi/id/product_serial ] && SERIAL=$(tr -d '\0' < /sys/class/dmi/id/product_serial | xargs)
+[ -z "$SERIAL" ] && [ -r /sys/class/dmi/id/product_serial ] && SERIAL=$(tr -d '\0' </sys/class/dmi/id/product_serial | xargs)
 
 OS_INFO=$(grep -s "^PRETTY_NAME=" /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 [ -z "$OS_INFO" ] && OS_INFO=$(uname -sr)
@@ -76,7 +78,7 @@ for path in /sys/class/net/*; do
     [ -e "$path" ] || continue
     iface="${path##*/}"
     case "$iface" in
-        lo|docker*|veth*|br-*|virbr*|vnet*|tun*|tap*) continue ;;
+        lo | docker* | veth* | br-* | virbr* | vnet* | tun* | tap*) continue ;;
     esac
     STATE=$(cat /sys/class/net/"$iface"/operstate 2>/dev/null)
     MAC=$(cat /sys/class/net/"$iface"/address 2>/dev/null)
@@ -99,7 +101,7 @@ PCI_STORAGE=""
 if command -v lspci &>/dev/null; then
     PCI_STORAGE=$(lspci 2>/dev/null | grep -iE "RAID|SCSI|SAS|SATA|Non-Volatile|Smart Array|MegaRAID")
     if [ -n "$PCI_STORAGE" ]; then
-        while IFS= read -r line; do printf '  %s\n' "$line"; done <<< "$PCI_STORAGE"
+        while IFS= read -r line; do printf '  %s\n' "$line"; done <<<"$PCI_STORAGE"
     else
         echo "  None detected."
     fi
@@ -156,7 +158,7 @@ if command -v smartctl &>/dev/null; then
         while read -r dev flag type; do
             echo "--- Hardware RAID Disk ($type) ---"
             smartctl -i -H -A "$dev" "$flag" "$type" 2>/dev/null | grep -E "$SMART_GREP"
-        done <<< "$MEGARAID_DEVS"
+        done <<<"$MEGARAID_DEVS"
     fi
 
     if echo "$PCI_STORAGE" | grep -qi "Smart Array" && [ -b /dev/sda ]; then
@@ -194,7 +196,7 @@ DMESG_RAW=$(dmesg -T 2>/dev/null || dmesg 2>/dev/null)
 DMESG_ERRS=$(echo "$DMESG_RAW" | grep -iE "UMC|Uncorrected|Hardware Error|mce:|EDAC.*(CE|UE|error)|I/O error|medium error|blk_update_request|critical medium|error: \{.*(UNC|ICRC|ABRT)|resetting link" | grep -vE "EDAC MC: Ver|Giving out device" | tail -n 15)
 if [ -n "$DMESG_ERRS" ]; then
     echo "  [WARN] Hardware / Memory / Disk Errors Found in dmesg:"
-    while IFS= read -r line; do printf '    %s\n' "$line"; done <<< "$DMESG_ERRS"
+    while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$DMESG_ERRS"
 else
     echo "  [OK] Zero Memory (ECC/UMC/MCE) or Disk (UNC/ICRC/I/O) errors in dmesg."
 fi
@@ -222,7 +224,7 @@ if command -v ipmitool &>/dev/null; then
         BATT_SDR=$(ipmitool sdr type Battery 2>/dev/null)
         if [ -n "$BATT_SDR" ]; then
             echo ">>> Battery Sensors:"
-            while IFS= read -r line; do printf '  %s\n' "$line"; done <<< "$BATT_SDR"
+            while IFS= read -r line; do printf '  %s\n' "$line"; done <<<"$BATT_SDR"
         fi
         BATT_SEL=$(ipmitool sel elist 2>/dev/null | grep -iE "battery|cmos")
         if [ -n "$BATT_SEL" ]; then
