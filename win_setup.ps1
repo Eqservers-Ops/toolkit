@@ -1,99 +1,191 @@
-# EqServers - Windows Server Hardware, Speedtest, iperf3 & License v2.7
+# =====================================================================
+# EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.8 (Production)
+# Read-only hardware/OS audit + isolated Ookla & iPerf3 throughput tests
+# Compatible with Windows Server 2012 R2 (PS 4.0) through 2022 (PS 5.1)
+# Zero registry modifications.
+# =====================================================================
+
 $ErrorActionPreference = "SilentlyContinue"
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ProgressPreference    = "SilentlyContinue"
 
-$sys = Get-CimInstance Win32_ComputerSystem
-$bios = Get-CimInstance Win32_BIOS
-$os = Get-CimInstance Win32_OperatingSystem
-$uptime = (Get-Date) - $os.LastBootUpTime
+# Enforce TLS 1.2 in memory for this session only (no registry changes)
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
 
-$lic = Get-CimInstance Win32_SoftwareLicensingProduct -Filter "ApplicationID = '55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey is not NULL"
-$licStatus = "Unknown / Not Activated"
-$licChannel = "Unknown"
-foreach ($l in $lic) {
-    if ($l.LicenseStatus -eq 1) {
-        $licStatus = "Licensed (Activated)"
-        switch ($l.Description) {
-            { $_ -like "*RETAIL*" } { $licChannel = "Retail" }
-            { $_ -like "*VOLUME*" -or $_ -like "*KMS*" -or $_ -like "*MAK*" } { $licChannel = "Volume / KMS" }
-            { $_ -like "*OEM*" } { $licChannel = "OEM" }
-            default { $licChannel = "Standard / Other" }
+# PowerShell 4.0 (Windows Server 2012 R2) Expand-Archive polyfill
+if (-not (Get-Command Expand-Archive -ErrorAction SilentlyContinue)) {
+    function Expand-Archive {
+        param(
+            [Parameter(Mandatory = $true, Position = 0)] [Alias('LiteralPath')] [string]$Path,
+            [Parameter(Mandatory = $true, Position = 1)] [string]$DestinationPath,
+            [switch]$Force
+        )
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        if (-not (Test-Path $DestinationPath)) {
+            New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
         }
-        break
-    } elseif ($l.LicenseStatus -eq 0) {
-        $licStatus = "Unlicensed / Evaluation Grace Period"
+        $destFull = (Resolve-Path $DestinationPath).Path
+        $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Path).Path)
+        try {
+            foreach ($entry in $zip.Entries) {
+                $targetPath = Join-Path $destFull ($entry.FullName -replace '/', '\')
+                if ([string]::IsNullOrEmpty($entry.Name)) {
+                    New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+                } else {
+                    $parentDir = Split-Path $targetPath -Parent
+                    if (-not (Test-Path $parentDir)) {
+                        New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
+                    }
+                    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
+                }
+            }
+        } finally {
+            $zip.Dispose()
+        }
     }
 }
-if ($os.Caption -like "*Evaluation*") { $licChannel = "Evaluation Edition" }
+
+# --- System & OS Metadata ---
+$cs   = Get-CimInstance Win32_ComputerSystem
+$bios = Get-CimInstance Win32_BIOS
+$os   = Get-CimInstance Win32_OperatingSystem
+$up   = (Get-Date) - $os.LastBootUpTime
+$utc  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
+
+$licText = "Unknown / Not Activated (Unknown)"
+try {
+    $lic = Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-98e3-d6ec3f16059f' AND PartialProductKey IS NOT NULL" | Select-Object -First 1
+    if ($lic) {
+        $statusMap = @{ 0 = "Unlicensed"; 1 = "Licensed"; 2 = "OOBGrace"; 3 = "OOTGrace"; 4 = "NonGenuineGrace"; 5 = "Notification"; 6 = "ExtendedGrace" }
+        $stStr = if ($statusMap.ContainsKey([int]$lic.LicenseStatus)) { $statusMap[[int]$lic.LicenseStatus] } else { "Code $($lic.LicenseStatus)" }
+        $licText = "$stStr ($($lic.Description))"
+    }
+} catch {}
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.7" -ForegroundColor Cyan
-Write-Host " Vendor : $($sys.Manufacturer)"
-Write-Host " Model  : $($sys.Model) (S/N: $($bios.SerialNumber))"
-Write-Host " OS     : $($os.Caption) | Build: $($os.BuildNumber) | Uptime: $($uptime.Days)d $($uptime.Hours)h"
-Write-Host " License: $licStatus ($licChannel)" -ForegroundColor $(if($licStatus -like "*Licensed*"){"Green"}else{"Yellow"})
-Write-Host " Host   : $env:COMPUTERNAME | Date: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')) UTC"
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.8" -ForegroundColor Cyan
+Write-Host " Vendor : $($cs.Manufacturer.Trim())"
+Write-Host " Model  : $($cs.Model.Trim()) (S/N: $($bios.SerialNumber.Trim()))"
+Write-Host " OS     : $($os.Caption.Trim()) | Build: $($os.BuildNumber) | Uptime: $($up.Days)d $($up.Hours)h"
+Write-Host " License: $licText"
+Write-Host " Host   : $env:COMPUTERNAME | Date: $utc"
 Write-Host "=================================================================" -ForegroundColor Cyan
 
+# --- [1] CPU & RAM SUMMARY ---
 Write-Host "`n[1] CPU & RAM SUMMARY:" -ForegroundColor Yellow
-$procs = Get-CimInstance Win32_Processor
-foreach ($p in $procs) {
-    Write-Host "  CPU: $($p.Name.Trim()) | Cores: $($p.NumberOfCores) | Logical: $($p.NumberOfLogicalProcessors)"
+$cpus = Get-CimInstance Win32_Processor
+foreach ($cpu in $cpus) {
+    Write-Host "  CPU: $($cpu.Name.Trim()) | Cores: $($cpu.NumberOfCores) | Logical: $($cpu.NumberOfLogicalProcessors)"
 }
-$totalRam = [math]::Round($sys.TotalPhysicalMemory / 1GB, 2)
-$freeRam = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
-Write-Host "  Memory: Total = $totalRam GB | Free = $freeRam GB"
+$totalMemGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+$freeMemGB  = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
+Write-Host "  Memory: Total = $totalMemGB GB | Free = $freeMemGB GB"
 
+# --- [2] NETWORK INTERFACES & PORT SPEED CHECK ---
 Write-Host "`n[2] NETWORK INTERFACES & PORT SPEED CHECK:" -ForegroundColor Yellow
-Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -or $_.PhysicalMediaType -ne 'Unspecified' } | ForEach-Object {
-    $iface = $_
-    $ip = (Get-NetIPAddress -InterfaceIndex $iface.ifIndex -AddressFamily IPv4).IPAddress -join ", "
-    if (-not $ip) { $ip = "No IPv4" }
-    Write-Host ("  - {0,-18} | Status: {1,-12} | Speed: {2,-10} | MAC: {3} | IP: {4}" -f $iface.Name, $iface.Status, $iface.LinkSpeed, $iface.MacAddress, $ip)
+$adapters = Get-NetAdapter -ErrorAction SilentlyContinue
+if ($adapters) {
+    foreach ($nic in $adapters) {
+        $ipObj = Get-NetIPAddress -InterfaceIndex $nic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+        $ipStr = if ($ipObj) { $ipObj.IPAddress } else { "N/A" }
+        $line  = "  - {0,-18} | Status: {1,-12} | Speed: {2,-9} | MAC: {3} | IP: {4}" -f $nic.Name, $nic.Status, $nic.LinkSpeed, $nic.MacAddress, $ipStr
+        Write-Host $line
+    }
+} else {
+    Write-Host "  [WARN] Unable to enumerate network adapters." -ForegroundColor Yellow
 }
 
+# --- [3] INTERNET BANDWIDTH SPEEDTEST (Ookla Speedtest CLI) ---
 Write-Host "`n[3] INTERNET BANDWIDTH SPEEDTEST (Ookla Speedtest CLI):" -ForegroundColor Yellow
-$stPath = "$env:TEMP\speedtest.exe"
+$stDir  = "C:\Windows\Temp\eq_speedtest"
+$stPath = "$stDir\speedtest.exe"
+
+Stop-Process -Name "speedtest" -Force -ErrorAction SilentlyContinue
+
 if (-not (Test-Path $stPath)) {
-    $zipPath = "$env:TEMP\speedtest.zip"
     try {
-        Invoke-WebRequest -Uri "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip" -OutFile $zipPath -UseBasicParsing
-        Expand-Archive -Path $zipPath -DestinationPath "$env:TEMP\speedtest_extracted" -Force
-        Move-Item "$env:TEMP\speedtest_extracted\speedtest.exe" $stPath -Force
-        Remove-Item $zipPath -Force
-        Remove-Item "$env:TEMP\speedtest_extracted" -Recurse -Force
-    } catch {}
+        New-Item -ItemType Directory -Path $stDir -Force | Out-Null
+        $stZip = "$env:TEMP\ookla_$(Get-Random).zip"
+        $stExt = "$env:TEMP\ookla_ext_$(Get-Random)"
+        Invoke-WebRequest -Uri "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip" -OutFile $stZip -UseBasicParsing
+        Expand-Archive -Path $stZip -DestinationPath $stExt -Force
+        Get-ChildItem $stExt -File -Recurse | Copy-Item -Destination $stDir -Force -ErrorAction SilentlyContinue
+        Remove-Item $stZip, $stExt -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "  [WARN] Ookla Speedtest download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 if (Test-Path $stPath) {
     Write-Host "  Running Ookla Speedtest against nearest server..." -ForegroundColor Cyan
-    $stOutput = & $stPath --accept-license --accept-gdpr --format=json | ConvertFrom-Json
-    if ($stOutput -and $stOutput.download) {
-        $dlMbps = [math]::Round($stOutput.download.bandwidth * 8 / 1000000, 2)
-        $ulMbps = [math]::Round($stOutput.upload.bandwidth * 8 / 1000000, 2)
-        $ping = [math]::Round($stOutput.ping.latency, 1)
-        Write-Host ("  - Download Speed : {0} Mbps" -f $dlMbps) -ForegroundColor Green
-        Write-Host ("  - Upload Speed   : {0} Mbps" -f $ulMbps) -ForegroundColor Green
-        Write-Host ("  - Ping / Latency : {0} ms" -f $ping)
-        Write-Host ("  - Test Server    : {0} ({1})" -f $stOutput.server.name, $stOutput.server.location)
+    $stOut = "$stDir\st_out_$(Get-Random).json"
+    $stErr = "$stDir\st_err_$(Get-Random).txt"
+    try {
+        $pSt = Start-Process -FilePath $stPath -ArgumentList "--accept-license --accept-gdpr --format=json" -NoNewWindow -RedirectStandardOutput $stOut -RedirectStandardError $stErr -PassThru
+        if ($pSt.WaitForExit(45000) -and (Test-Path $stOut)) {
+            $stRaw = Get-Content $stOut -Raw -ErrorAction SilentlyContinue
+            if ($stRaw) {
+                $stJson  = $stRaw | ConvertFrom-Json
+                $dlMbps  = [math]::Round(($stJson.download.bandwidth * 8) / 1e6, 2)
+                $ulMbps  = [math]::Round(($stJson.upload.bandwidth * 8) / 1e6, 2)
+                $pingMs  = [math]::Round($stJson.ping.latency, 1)
+                $srvName = "$($stJson.server.name) ($($stJson.server.location))"
+                Write-Host ("  - Download Speed : {0} Mbps" -f $dlMbps) -ForegroundColor Green
+                Write-Host ("  - Upload Speed   : {0} Mbps" -f $ulMbps) -ForegroundColor Green
+                Write-Host ("  - Ping / Latency : {0} ms" -f $pingMs) -ForegroundColor Green
+                Write-Host ("  - Test Server    : {0}" -f $srvName) -ForegroundColor Cyan
+            } else {
+                Write-Host "  [WARN] Ookla Speedtest returned empty output." -ForegroundColor Yellow
+            }
+        } else {
+            try { $pSt.Kill() } catch {}
+            Write-Host "  [WARN] Ookla Speedtest timed out." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  [WARN] Ookla Speedtest execution failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    } finally {
+        Remove-Item $stOut, $stErr -Force -ErrorAction SilentlyContinue
     }
 } else {
     Write-Host "  [SKIP] Speedtest tool unavailable." -ForegroundColor Yellow
 }
 
+# --- [3.5] IPERF3 RAW THROUGHPUT TEST (Multi-Mirror Failover) ---
 Write-Host "`n[3.5] IPERF3 RAW THROUGHPUT TEST (Multi-Mirror Failover):" -ForegroundColor Yellow
-$iperfPath = "$env:TEMP\iperf3.exe"
-$cygwinDll = "$env:TEMP\cygwin1.dll"
+$iperfDir  = "C:\Windows\Temp\eq_iperf3"
+$iperfPath = "$iperfDir\iperf3.exe"
+$cygwinDll = "$iperfDir\cygwin1.dll"
+
+Stop-Process -Name "iperf3" -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-Path $iperfPath) -or -not (Test-Path $cygwinDll)) {
     try {
-        Invoke-WebRequest -Uri "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip" -OutFile "$env:TEMP\iperf3.zip" -UseBasicParsing
-        Expand-Archive -Path "$env:TEMP\iperf3.zip" -DestinationPath "$env:TEMP\iperf3_extract" -Force
-        Get-ChildItem "$env:TEMP\iperf3_extract" -File -Recurse | Copy-Item -Destination $env:TEMP -Force
-        Remove-Item "$env:TEMP\iperf3.zip","$env:TEMP\iperf3_extract" -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $iperfDir -Force | Out-Null
+        $zipFile = "$env:TEMP\iperf3_$(Get-Random).zip"
+        $extDir  = "$env:TEMP\iperf3_ext_$(Get-Random)"
+        Invoke-WebRequest -Uri "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip" -OutFile $zipFile -UseBasicParsing
+        Expand-Archive -Path $zipFile -DestinationPath $extDir -Force
+        Get-ChildItem $extDir -File -Recurse | Copy-Item -Destination $iperfDir -Force -ErrorAction SilentlyContinue
+        Remove-Item $zipFile, $extDir -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Host "  [WARN] iPerf3 download failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+}
+
+function Invoke-IperfTimed ($arguments) {
+    $outFile = "$iperfDir\out_$(Get-Random).json"
+    $errFile = "$iperfDir\err_$(Get-Random).txt"
+    $p = Start-Process -FilePath $iperfPath -ArgumentList $arguments -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
+    if (-not $p.WaitForExit(12000)) {
+        try { $p.Kill() } catch {}
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    $raw = $null
+    if (Test-Path $outFile) {
+        $raw = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+    }
+    Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    return $raw
 }
 
 if (Test-Path $iperfPath) {
@@ -108,14 +200,14 @@ if (Test-Path $iperfPath) {
     )
     $iperfSuccess = $false
     foreach ($m in $iperfMirrors) {
-        $rawDl = & $iperfPath -c $m -p 5201 -P 4 -t 4 -R --connect-timeout 2000 --json 2>$null | Out-String
+        $rawDl = Invoke-IperfTimed "-c $m -p 5201 -P 4 -t 4 -R --connect-timeout 2000 --json"
         if ($rawDl) {
             try {
                 $jDl = $rawDl | ConvertFrom-Json
                 $dlMbps = [math]::Round($jDl.end.sum_received.bits_per_second / 1e6, 2)
                 if ($dlMbps -gt 0) {
                     Write-Host ("  - iPerf3 Download ({0}): {1} Mbps" -f $m, $dlMbps) -ForegroundColor Green
-                    $rawUl = & $iperfPath -c $m -p 5201 -P 4 -t 4 --connect-timeout 2000 --json 2>$null | Out-String
+                    $rawUl = Invoke-IperfTimed "-c $m -p 5201 -P 4 -t 4 --connect-timeout 2000 --json"
                     if ($rawUl) {
                         $jUl = $rawUl | ConvertFrom-Json
                         $ulMbps = [math]::Round($jUl.end.sum_sent.bits_per_second / 1e6, 2)
@@ -136,53 +228,109 @@ if (Test-Path $iperfPath) {
     Write-Host "  [SKIP] iPerf3 binary unavailable." -ForegroundColor Yellow
 }
 
+# --- [4] STORAGE CONTROLLERS & PHYSICAL DISK HEALTH ---
 Write-Host "`n[4] STORAGE CONTROLLERS & PHYSICAL DISK HEALTH:" -ForegroundColor Yellow
-Write-Host ">>> Storage / RAID Controllers:"
-Get-CimInstance Win32_SCSIController | ForEach-Object {
-    Write-Host "  - $($_.Name) (Status: $($_.Status))"
+Write-Host ">>> Storage / RAID Controllers:" -ForegroundColor Cyan
+$controllers = Get-CimInstance Win32_SCSIController -ErrorAction SilentlyContinue
+if ($controllers) {
+    foreach ($ctrl in $controllers) {
+        Write-Host "  - $($ctrl.Name) (Status: $($ctrl.Status))"
+    }
+} else {
+    Write-Host "  - None detected via WMI"
 }
 
-Write-Host ">>> Physical Disks & Reliability Counters (Uncorrected Errors / Wear):"
-Get-PhysicalDisk | Sort-Object DeviceId | ForEach-Object {
-    $disk = $_
-    $rel = $disk | Get-StorageReliabilityCounter
-    $sz = [math]::Round($disk.Size / 1GB, 1)
-    Write-Host ("  --- Disk #{0}: {1} ({2} GB | {3} | Bus: {4}) ---" -f $disk.DeviceId, $disk.FriendlyName, $sz, $disk.MediaType, $disk.BusType)
-    Write-Host ("      Serial: {0} | Health: {1} | OperationalStatus: {2}" -f $disk.SerialNumber, $disk.HealthStatus, $disk.OperationalStatus)
-    if ($rel) {
-        Write-Host ("      ReadErrorsUncorrected: {0} | WriteErrorsUncorrected: {1} | SSD Wear: {2}% | Temp: {3} C | PowerOnHours: {4}" -f `
-            $(if ($null -ne $rel.ReadErrorsUncorrected) {$rel.ReadErrorsUncorrected} else {"0"}), `
-            $(if ($null -ne $rel.WriteErrorsUncorrected) {$rel.WriteErrorsUncorrected} else {"0"}), `
-            $(if ($null -ne $rel.Wear) {$rel.Wear} else {"N/A"}), `
-            $(if ($null -ne $rel.Temperature) {$rel.Temperature} else {"N/A"}), `
-            $(if ($null -ne $rel.PowerOnHours) {$rel.PowerOnHours} else {"N/A"}))
+Write-Host ">>> Physical Disks & Reliability Counters (Uncorrected Errors / Wear):" -ForegroundColor Cyan
+$disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | Sort-Object { if ($_.DeviceId -match '^\d+$') { [int]$_.DeviceId } else { 999 } }
+if ($disks) {
+    foreach ($d in $disks) {
+        $sizeGB = [math]::Round($d.Size / 1GB, 1)
+        $rel    = $d | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+        $rErr   = if ($null -ne $rel.ReadErrorsUncorrected) { $rel.ReadErrorsUncorrected } else { 0 }
+        $wErr   = if ($null -ne $rel.WriteErrorsUncorrected) { $rel.WriteErrorsUncorrected } else { 0 }
+        $wear   = if ($null -ne $rel.Wear) { "$($rel.Wear)%" } else { "0%" }
+        $temp   = if ($null -ne $rel.Temperature) { "$($rel.Temperature) C" } else { "0 C" }
+        $poh    = if ($null -ne $rel.PowerOnHours) { $rel.PowerOnHours } else { "N/A" }
+        $serial = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "N/A" }
+
+        Write-Host "  --- Disk #$($d.DeviceId): $($d.FriendlyName) ($sizeGB GB | $($d.MediaType) | Bus: $($d.BusType)) ---"
+        Write-Host "      Serial: $serial | Health: $($d.HealthStatus) | OperationalStatus: $($d.OperationalStatus)"
+        $errColor = if ($rErr -gt 0 -or $wErr -gt 0 -or $d.HealthStatus -ne "Healthy") { "Red" } else { "Gray" }
+        Write-Host "      ReadErrorsUncorrected: $rErr | WriteErrorsUncorrected: $wErr | SSD Wear: $wear | Temp: $temp | PowerOnHours: $poh" -ForegroundColor $errColor
+    }
+} else {
+    Write-Host "  [WARN] Get-PhysicalDisk unavailable on this OS/controller." -ForegroundColor Yellow
+}
+
+# Hardware RAID safeguard (read-only alert + optional read-only vendor CLI query)
+$raidDisks = $disks | Where-Object { $_.BusType -eq 'RAID' -or $_.FriendlyName -match 'LOGICAL VOLUME|PERC|MegaRAID|RAID' }
+if ($raidDisks) {
+    Write-Host "  [WARN] Hardware RAID detected: Windows only reports virtual logical volumes, not individual member drives." -ForegroundColor Yellow
+    Write-Host "         Verify physical drive SMART/array health via HP iLO, Dell iDRAC, or vendor RAID CLI." -ForegroundColor Yellow
+    $ssacli = Get-Command ssacli, hpssacli -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($ssacli) {
+        Write-Host "  [INFO] Found $($ssacli.Name) - querying physical drives (read-only):" -ForegroundColor Cyan
+        & $ssacli.Source ctrl all show config 2>$null | Select-String -Pattern "array|logicaldrive|physicaldrive" | ForEach-Object { Write-Host "         $($_.Line.Trim())" }
+    }
+    $storcli = Get-Command storcli64, storcli -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($storcli) {
+        Write-Host "  [INFO] Found $($storcli.Name) - querying physical drives (read-only):" -ForegroundColor Cyan
+        & $storcli.Source /call /eall /sall show 2>$null | Select-String -Pattern "Drive /c|Onln|UGood|UBad|DHS|GHS|Rbld|Failed" | ForEach-Object { Write-Host "         $($_.Line.Trim())" }
     }
 }
 
+# --- [5] WINDOWS SYSTEM EVENT LOG: DISK I/O & HARDWARE (WHEA) ERRORS ---
 Write-Host "`n[5] WINDOWS SYSTEM EVENT LOG: DISK I/O & HARDWARE (WHEA) ERRORS (Last 7 Days):" -ForegroundColor Yellow
-$startTime = (Get-Date).AddDays(-7)
-$hwEvents = Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-WHEA-Logger','disk','ntfs','storachi','MegaSAS','HpSAMD'; Level=1,2,3; StartTime=$startTime} -MaxEvents 10
-if ($hwEvents) {
-    Write-Host "  [WARN] Recent Disk or Hardware (WHEA/ECC/PCIe) Errors Detected:" -ForegroundColor Red
-    foreach ($ev in $hwEvents) {
-        $msg = ($ev.Message -split "`r`n")[0]
-        Write-Host "    [$($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm'))] [$($ev.ProviderName) ID:$($ev.Id)] $msg"
+$since = (Get-Date).AddDays(-7)
+$hwEvents = @()
+try {
+    $rawEvents = Get-WinEvent -FilterHashtable @{
+        LogName      = 'System'
+        StartTime    = $since
+        Level        = 1, 2, 3
+        ProviderName = 'Microsoft-Windows-WHEA-Logger', 'disk', 'ntfs', 'storahci', 'stornvme', 'MegaSAS', 'HpCISSs2', 'HpSAMD'
+    } -ErrorAction Stop
+    $hwEvents = $rawEvents | Where-Object {
+        $_.ProviderName -eq 'Microsoft-Windows-WHEA-Logger' -or
+        $_.Level -le 2 -or
+        $_.Id -in @(7, 11, 15, 51, 55, 129, 153)
     }
-} else {
+} catch {}
+
+if ($hwEvents.Count -eq 0) {
     Write-Host "  [OK] Zero WHEA Hardware/RAM errors or Disk Bad Block/I/O errors in the last 7 days." -ForegroundColor Green
-}
-
-Write-Host "`n[6] RDP CONFIGURATION & HOTFIX VERIFICATION:" -ForegroundColor Yellow
-$hotfixId = "KB5129237"
-$kb = Get-HotFix -Id $hotfixId
-$lastKb = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1
-if ($kb) {
-    Write-Host "  [OK] Target RDS Hotfix $hotfixId is installed." -ForegroundColor Green
 } else {
-    Write-Host "  [INFO] Specific hotfix $hotfixId not listed. Latest installed update: $($lastKb.HotFixID) ($($lastKb.InstalledOn))"
+    Write-Host "  [ALERT] Found $($hwEvents.Count) hardware/disk events in the last 7 days (showing latest 10):" -ForegroundColor Red
+    $hwEvents | Select-Object -First 10 | ForEach-Object {
+        $msg = ($_.Message -replace '\r?\n', ' ').Trim()
+        if ($msg.Length -gt 120) { $msg = $msg.Substring(0, 120) + "..." }
+        Write-Host ("  - [{0}] {1} (ID {2}): {3}" -f $_.TimeCreated.ToString("yyyy-MM-dd HH:mm"), $_.ProviderName, $_.Id, $msg) -ForegroundColor Red
+    }
 }
 
-Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-Write-Host "  [OK] Remote Desktop (RDP) service & Windows Firewall rules verified active." -ForegroundColor Green
+# --- [6] RDP CONFIGURATION & HOTFIX VERIFICATION ---
+Write-Host "`n[6] RDP CONFIGURATION & HOTFIX VERIFICATION:" -ForegroundColor Yellow
+$hotfixes = Get-HotFix -ErrorAction SilentlyContinue | Sort-Object { if ($_.InstalledOn) { $_.InstalledOn } else { [datetime]::MinValue } } -Descending
+$targetKB = $hotfixes | Where-Object { $_.HotFixID -eq "KB5129237" } | Select-Object -First 1
+if ($targetKB) {
+    Write-Host "  [OK] Target hotfix KB5129237 installed ($($targetKB.InstalledOn))." -ForegroundColor Green
+} else {
+    $latestKB = $hotfixes | Select-Object -First 1
+    if ($latestKB) {
+        Write-Host "  [INFO] Specific hotfix KB5129237 not listed. Latest installed update: $($latestKB.HotFixID) ($($latestKB.InstalledOn))"
+    } else {
+        Write-Host "  [INFO] No hotfix history returned."
+    }
+}
+
+$rdpSvc  = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+$rdpDeny = (Get-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -ErrorAction SilentlyContinue).fDenyTSConnections
+$rdpFw   = Get-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq "True" }
+
+if ($rdpSvc.Status -eq "Running" -and $rdpDeny -eq 0 -and $rdpFw) {
+    Write-Host "  [OK] Remote Desktop (RDP) service & Windows Firewall rules verified active." -ForegroundColor Green
+} else {
+    Write-Host "  [WARN] Check RDP status -> Service: $($rdpSvc.Status) | fDenyTSConnections: $rdpDeny | Active Firewall Rules: $($rdpFw.Count)" -ForegroundColor Yellow
+}
+
 Write-Host "=================================================================" -ForegroundColor Cyan
