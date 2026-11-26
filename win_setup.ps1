@@ -1,8 +1,8 @@
 # =====================================================================
-# EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.8 (Production)
+# EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.9 (Production)
 # Read-only hardware/OS audit + isolated Ookla & iPerf3 throughput tests
 # Compatible with Windows Server 2012 R2 (PS 4.0) through 2022 (PS 5.1)
-# Zero registry modifications.
+# Zero registry, firewall, or RDP modifications.
 # =====================================================================
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -11,36 +11,44 @@ $ProgressPreference    = "SilentlyContinue"
 # Enforce TLS 1.2 in memory for this session only (no registry changes)
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
 
-# PowerShell 4.0 (Windows Server 2012 R2) Expand-Archive polyfill
-if (-not (Get-Command Expand-Archive -ErrorAction SilentlyContinue)) {
-    function Expand-Archive {
-        param(
-            [Parameter(Mandatory = $true, Position = 0)] [Alias('LiteralPath')] [string]$Path,
-            [Parameter(Mandatory = $true, Position = 1)] [string]$DestinationPath,
-            [switch]$Force
-        )
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        if (-not (Test-Path $DestinationPath)) {
-            New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
-        }
-        $destFull = (Resolve-Path $DestinationPath).Path
-        $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $Path).Path)
-        try {
-            foreach ($entry in $zip.Entries) {
-                $targetPath = Join-Path $destFull ($entry.FullName -replace '/', '\')
-                if ([string]::IsNullOrEmpty($entry.Name)) {
-                    New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
-                } else {
-                    $parentDir = Split-Path $targetPath -Parent
-                    if (-not (Test-Path $parentDir)) {
-                        New-Item -ItemType Directory -Path $parentDir -Force | Out-Null
-                    }
-                    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
+# AV-safe & PS 4.0-compatible ZIP extractor (avoids ExtractToFile LastWriteTime lock)
+function Expand-ZipSafe {
+    param(
+        [Parameter(Mandatory = $true)] [string]$ZipPath,
+        [Parameter(Mandatory = $true)] [string]$DestDir
+    )
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    if (-not (Test-Path $DestDir)) {
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+    }
+    $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $ZipPath).Path)
+    try {
+        foreach ($entry in $zip.Entries) {
+            if ([string]::IsNullOrEmpty($entry.Name)) { continue }
+            $targetPath = Join-Path $DestDir $entry.Name
+            $written = $false
+            for ($attempt = 1; $attempt -le 4; $attempt++) {
+                $inStream  = $null
+                $outStream = $null
+                try {
+                    $inStream  = $entry.Open()
+                    $outStream = [System.IO.File]::Open($targetPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+                    $inStream.CopyTo($outStream)
+                    $written = $true
+                    break
+                } catch {
+                    Start-Sleep -Milliseconds (500 * $attempt)
+                } finally {
+                    if ($outStream) { $outStream.Dispose() }
+                    if ($inStream)  { $inStream.Dispose() }
                 }
             }
-        } finally {
-            $zip.Dispose()
+            if (-not $written) {
+                throw "File locked during extraction: $($entry.Name)"
+            }
         }
+    } finally {
+        $zip.Dispose()
     }
 }
 
@@ -62,7 +70,7 @@ try {
 } catch {}
 
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.8" -ForegroundColor Cyan
+Write-Host " EQSERVERS WINDOWS DIAGNOSTIC & SPEEDTEST REPORT v2.9" -ForegroundColor Cyan
 Write-Host " Vendor : $($cs.Manufacturer.Trim())"
 Write-Host " Model  : $($cs.Model.Trim()) (S/N: $($bios.SerialNumber.Trim()))"
 Write-Host " OS     : $($os.Caption.Trim()) | Build: $($os.BuildNumber) | Uptime: $($up.Days)d $($up.Hours)h"
@@ -103,13 +111,11 @@ Stop-Process -Name "speedtest" -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-Path $stPath)) {
     try {
-        New-Item -ItemType Directory -Path $stDir -Force | Out-Null
         $stZip = "$env:TEMP\ookla_$(Get-Random).zip"
-        $stExt = "$env:TEMP\ookla_ext_$(Get-Random)"
         Invoke-WebRequest -Uri "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-win64.zip" -OutFile $stZip -UseBasicParsing
-        Expand-Archive -Path $stZip -DestinationPath $stExt -Force
-        Get-ChildItem $stExt -File -Recurse | Copy-Item -Destination $stDir -Force -ErrorAction SilentlyContinue
-        Remove-Item $stZip, $stExt -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-ZipSafe -ZipPath $stZip -DestDir $stDir
+        Remove-Item $stZip -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
     } catch {
         Write-Host "  [WARN] Ookla Speedtest download failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
@@ -159,13 +165,11 @@ Stop-Process -Name "iperf3" -Force -ErrorAction SilentlyContinue
 
 if (-not (Test-Path $iperfPath) -or -not (Test-Path $cygwinDll)) {
     try {
-        New-Item -ItemType Directory -Path $iperfDir -Force | Out-Null
         $zipFile = "$env:TEMP\iperf3_$(Get-Random).zip"
-        $extDir  = "$env:TEMP\iperf3_ext_$(Get-Random)"
         Invoke-WebRequest -Uri "https://github.com/ar51an/iperf3-win-builds/releases/download/3.22/iperf-3.22-win64.zip" -OutFile $zipFile -UseBasicParsing
-        Expand-Archive -Path $zipFile -DestinationPath $extDir -Force
-        Get-ChildItem $extDir -File -Recurse | Copy-Item -Destination $iperfDir -Force -ErrorAction SilentlyContinue
-        Remove-Item $zipFile, $extDir -Recurse -Force -ErrorAction SilentlyContinue
+        Expand-ZipSafe -ZipPath $zipFile -DestDir $iperfDir
+        Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
     } catch {
         Write-Host "  [WARN] iPerf3 download failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
